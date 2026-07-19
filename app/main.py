@@ -62,24 +62,12 @@ class OrderItemOut(BaseModel):
     price_at_purchase: Decimal
 
 class OrderOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     status: OrderStatus
     delivery_address: Optional[str]
     total_price: Decimal
     created_at: str
     items: list[OrderItemOut] = []
-
-    @classmethod
-    def from_order(cls, order: Order):
-        return cls(
-            id=order.id,
-            status=order.status,
-            delivery_address=order.delivery_address,
-            total_price=order.total_price,
-            created_at=order.created_at.isoformat(),
-            items=order.items,
-        )
 
 
 async def get_current_user(
@@ -289,11 +277,25 @@ async def my_orders(
 ):
     result = await db.execute(
         select(Order).where(Order.user_id == current_user.id)
-        .options(selectinload(Order.items).selectinload(OrderItem.product))
+        .options(
+            selectinload(Order.items)
+            .selectinload(OrderItem.product)
+            .selectinload(Product.category)
+        )
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
-    return [OrderOut.from_order(o) for o in orders]
+    result_list = []
+    for o in orders:
+        result_list.append(OrderOut(
+            id=o.id,
+            status=o.status,
+            delivery_address=o.delivery_address,
+            total_price=o.total_price,
+            created_at=o.created_at.isoformat(),
+            items=o.items,
+        ))
+    return result_list
 
 
 @app.get("/health")
