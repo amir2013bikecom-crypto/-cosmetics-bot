@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, Numeric, DateTime, ForeignKey, Enum, Boolean
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Numeric, DateTime, ForeignKey, Enum, Boolean
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -22,7 +22,7 @@ class OrderStatus(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String(64), nullable=True)
     full_name = Column(String(128), nullable=True)
     role = Column(Enum(Role), default=Role.buyer, nullable=False)
