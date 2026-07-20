@@ -53,6 +53,10 @@ class CartOut(BaseModel):
 
 class OrderCreate(BaseModel):
     delivery_address: str
+    phone: str
+
+class OrderStatusUpdate(BaseModel):
+    status: OrderStatus
 
 class OrderItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -65,6 +69,7 @@ class OrderOut(BaseModel):
     id: int
     status: OrderStatus
     delivery_address: Optional[str]
+    phone: Optional[str] = None
     total_price: Decimal
     created_at: str
     items: list[OrderItemOut] = []
@@ -97,20 +102,28 @@ async def get_current_user(
     return user
 
 
-async def notify_seller(order_id: int, total: Decimal, address: str, items: list, buyer: str):
+async def notify_seller(order_id: int, total: Decimal, address: str, phone: str, items: list, buyer: str):
     items_text = "\n".join([f"• {i.product.name} × {i.quantity} = {int(i.price_at_purchase * i.quantity)} ₽" for i in items])
     text = (
         f"🛍 <b>Новый заказ #{order_id}!</b>\n\n"
         f"👤 Покупатель: {buyer}\n"
+        f"📞 Телефон: {phone}\n"
         f"📦 Товары:\n{items_text}\n\n"
         f"💰 Итого: <b>{int(total)} ₽</b>\n"
         f"📍 Адрес: {address}"
     )
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "🚚 Отправлен", "callback_data": f"status_{order_id}_shipped"},
+            {"text": "✅ Доставлен", "callback_data": f"status_{order_id}_delivered"},
+            {"text": "❌ Отменён", "callback_data": f"status_{order_id}_cancelled"},
+        ]]
+    }
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": SELLER_ID, "text": text, "parse_mode": "HTML"},
+                json={"chat_id": SELLER_ID, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
                 timeout=5
             )
     except Exception:
@@ -266,8 +279,26 @@ async def create_order(
     for oi in order_items:
         oi.product = next(i.product for i in cart if i.product_id == oi.product_id)
     buyer = current_user.full_name or current_user.username or str(current_user.telegram_id)
-    await notify_seller(order.id, total, data.delivery_address, order_items, buyer)
+    await notify_seller(order.id, total, data.delivery_address, data.phone, order_items, buyer)
     return {"id": order.id, "total_price": str(total)}
+
+
+@app.patch("/api/v1/orders/{order_id}/status")
+async def update_order_status(
+    order_id: int,
+    data: OrderStatusUpdate,
+    x_seller_key: str = Header("", alias="X-Seller-Key"),
+):
+    if x_seller_key != BOT_TOKEN:
+        raise HTTPException(403, "Forbidden")
+    async with AsyncSession(engine) as db:
+        result = await db.execute(select(Order).where(Order.id == order_id))
+        order = result.scalar_one_or_none()
+        if not order:
+            raise HTTPException(404, "Order not found")
+        order.status = data.status
+        await db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/v1/orders/")
