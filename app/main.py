@@ -102,7 +102,7 @@ async def get_current_user(
     return user
 
 
-async def notify_seller(order_id: int, total: Decimal, address: str, phone: str, items: list, buyer: str):
+async def notify_seller(order_id: int, total: Decimal, address: str, phone: str, items: list, buyer: str, buyer_id: int):
     items_text = "\n".join([f"• {i.product.name} × {i.quantity} = {int(i.price_at_purchase * i.quantity)} ₽" for i in items])
     text = (
         f"🛍 <b>Новый заказ #{order_id}!</b>\n\n"
@@ -114,9 +114,8 @@ async def notify_seller(order_id: int, total: Decimal, address: str, phone: str,
     )
     keyboard = {
         "inline_keyboard": [[
-            {"text": "🚚 Отправлен", "callback_data": f"status_{order_id}_shipped"},
-            {"text": "✅ Доставлен", "callback_data": f"status_{order_id}_delivered"},
-            {"text": "❌ Отменён", "callback_data": f"status_{order_id}_cancelled"},
+            {"text": "🚚 Отправлен", "callback_data": f"seller_shipped_{order_id}_{buyer_id}"},
+            {"text": "❌ Отменён", "callback_data": f"seller_cancelled_{order_id}_{buyer_id}"},
         ]]
     }
     try:
@@ -279,7 +278,7 @@ async def create_order(
     for oi in order_items:
         oi.product = next(i.product for i in cart if i.product_id == oi.product_id)
     buyer = current_user.full_name or current_user.username or str(current_user.telegram_id)
-    await notify_seller(order.id, total, data.delivery_address, data.phone, order_items, buyer)
+    await notify_seller(order.id, total, data.delivery_address, data.phone, order_items, buyer, current_user.telegram_id)
     return {"id": order.id, "total_price": str(total)}
 
 
