@@ -17,8 +17,6 @@ BOT_TOKEN = "8875866899:AAEM-8DRNWIhwHfsRDQy3YvA3SxzwnEzeug"
 SELLER_ID = 7890854793
 
 
-# ─── Schemas ─────────────────────────────────────────────────────────────────
-
 class CategoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -55,6 +53,10 @@ class CartOut(BaseModel):
 
 class OrderCreate(BaseModel):
     delivery_address: str
+    phone: str
+
+class OrderStatusUpdate(BaseModel):
+    status: OrderStatus
 
 class OrderItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -64,27 +66,14 @@ class OrderItemOut(BaseModel):
     price_at_purchase: Decimal
 
 class OrderOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     status: OrderStatus
     delivery_address: Optional[str]
+    phone: Optional[str] = None
     total_price: Decimal
     created_at: str
     items: list[OrderItemOut] = []
 
-    @classmethod
-    def from_order(cls, order: Order):
-        return cls(
-            id=order.id,
-            status=order.status,
-            delivery_address=order.delivery_address,
-            total_price=order.total_price,
-            created_at=order.created_at.isoformat(),
-            items=order.items,
-        )
-
-
-# ─── Auth ─────────────────────────────────────────────────────────────────────
 
 async def get_current_user(
     x_init_data: str = Header("", alias="X-Init-Data"),
@@ -93,7 +82,6 @@ async def get_current_user(
     telegram_id = None
     username = None
     full_name = None
-
     try:
         from urllib.parse import parse_qsl, unquote
         vals = dict(parse_qsl(unquote(x_init_data), keep_blank_values=True))
@@ -103,10 +91,8 @@ async def get_current_user(
         full_name = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
     except Exception:
         pass
-
     if not telegram_id:
         raise HTTPException(401, "Invalid init data")
-
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -116,29 +102,32 @@ async def get_current_user(
     return user
 
 
-# ─── Notify seller ────────────────────────────────────────────────────────────
-
-async def notify_seller(order_id: int, total: Decimal, address: str, items: list, buyer: str):
+async def notify_seller(order_id: int, total: Decimal, address: str, phone: str, items: list, buyer: str, buyer_id: int):
     items_text = "\n".join([f"• {i.product.name} × {i.quantity} = {int(i.price_at_purchase * i.quantity)} ₽" for i in items])
     text = (
         f"🛍 <b>Новый заказ #{order_id}!</b>\n\n"
         f"👤 Покупатель: {buyer}\n"
+        f"📞 Телефон: {phone}\n"
         f"📦 Товары:\n{items_text}\n\n"
         f"💰 Итого: <b>{int(total)} ₽</b>\n"
         f"📍 Адрес: {address}"
     )
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "🚚 Отправлен", "callback_data": f"seller_shipped_{order_id}_{buyer_id}"},
+            {"text": "❌ Отменён", "callback_data": f"seller_cancelled_{order_id}_{buyer_id}"},
+        ]]
+    }
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": SELLER_ID, "text": text, "parse_mode": "HTML"},
+                json={"chat_id": SELLER_ID, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
                 timeout=5
             )
     except Exception:
         pass
 
-
-# ─── App ──────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -158,15 +147,11 @@ app.add_middleware(
 )
 
 
-# ─── Categories ───────────────────────────────────────────────────────────────
-
 @app.get("/api/v1/categories/", response_model=list[CategoryOut])
 async def list_categories(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Category))
     return result.scalars().all()
 
-
-# ─── Products ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/products/", response_model=list[ProductOut])
 async def list_products(
@@ -197,8 +182,6 @@ async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
     return product
 
 
-# ─── Cart ─────────────────────────────────────────────────────────────────────
-
 @app.get("/api/v1/cart/", response_model=CartOut)
 async def get_cart(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     result = await db.execute(
@@ -220,7 +203,6 @@ async def add_to_cart(
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(404, "Product not found")
-
     result = await db.execute(
         select(CartItem).where(CartItem.user_id == current_user.id, CartItem.product_id == data.product_id)
     )
@@ -262,8 +244,6 @@ async def remove_from_cart(
     await db.execute(delete(CartItem).where(CartItem.user_id == current_user.id, CartItem.product_id == product_id))
 
 
-# ─── Orders ───────────────────────────────────────────────────────────────────
-
 @app.post("/api/v1/orders/", status_code=201)
 async def create_order(
     data: OrderCreate,
@@ -277,12 +257,10 @@ async def create_order(
     cart = result.scalars().all()
     if not cart:
         raise HTTPException(400, "Cart is empty")
-
     total = Decimal("0")
     order = Order(user_id=current_user.id, delivery_address=data.delivery_address, total_price=0)
     db.add(order)
     await db.flush()
-
     order_items = []
     for item in cart:
         order_item = OrderItem(
@@ -294,19 +272,32 @@ async def create_order(
         db.add(order_item)
         order_items.append(order_item)
         total += Decimal(str(item.product.price)) * item.quantity
-
     order.total_price = total
     await db.execute(delete(CartItem).where(CartItem.user_id == current_user.id))
     await db.flush()
-
-    # Загружаем продукты для уведомления
     for oi in order_items:
         oi.product = next(i.product for i in cart if i.product_id == oi.product_id)
-
     buyer = current_user.full_name or current_user.username or str(current_user.telegram_id)
-    await notify_seller(order.id, total, data.delivery_address, order_items, buyer)
-
+    await notify_seller(order.id, total, data.delivery_address, data.phone, order_items, buyer, current_user.telegram_id)
     return {"id": order.id, "total_price": str(total)}
+
+
+@app.patch("/api/v1/orders/{order_id}/status")
+async def update_order_status(
+    order_id: int,
+    data: OrderStatusUpdate,
+    x_seller_key: str = Header("", alias="X-Seller-Key"),
+):
+    if x_seller_key != BOT_TOKEN:
+        raise HTTPException(403, "Forbidden")
+    async with AsyncSession(engine) as db:
+        result = await db.execute(select(Order).where(Order.id == order_id))
+        order = result.scalar_one_or_none()
+        if not order:
+            raise HTTPException(404, "Order not found")
+        order.status = data.status
+        await db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/v1/orders/")
@@ -340,10 +331,10 @@ async def my_orders(
 @app.post("/api/v1/seed")
 async def seed_db(db: AsyncSession = Depends(get_db)):
     cats = [
-        Category(name="Уход за лицом", slug="face2"),
-        Category(name="Уход за телом", slug="body2"),
-        Category(name="Декоративная косметика", slug="makeup2"),
-        Category(name="Ароматы", slug="perfume2"),
+        Category(name="Уход за лицом", slug="face"),
+        Category(name="Уход за телом", slug="body"),
+        Category(name="Декоративная косметика", slug="makeup"),
+        Category(name="Ароматы", slug="perfume"),
     ]
     for c in cats:
         db.add(c)
