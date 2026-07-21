@@ -316,11 +316,25 @@ async def my_orders(
 ):
     result = await db.execute(
         select(Order).where(Order.user_id == current_user.id)
-        .options(selectinload(Order.items).selectinload(OrderItem.product))
+        .options(
+            selectinload(Order.items)
+            .selectinload(OrderItem.product)
+            .selectinload(Product.category)
+        )
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
-    return [OrderOut.from_order(o) for o in orders]
+    result_list = []
+    for o in orders:
+        result_list.append(OrderOut(
+            id=o.id,
+            status=o.status,
+            delivery_address=o.delivery_address,
+            total_price=o.total_price,
+            created_at=o.created_at.isoformat(),
+            items=o.items,
+        ))
+    return result_list
 
 
 @app.post("/api/v1/seed")
