@@ -14,7 +14,7 @@ from app.database import engine, get_db
 from app.models import Base, User, Category, Product, CartItem, Order, OrderItem, OrderStatus
 
 BOT_TOKEN = "8875866899:AAEM-8DRNWIhwHfsRDQy3YvA3SxzwnEzeug"
-SELLER_ID = 7890854793
+SELLER_IDS = [7890854793, 940063562]
 
 
 class CategoryOut(BaseModel):
@@ -120,11 +120,12 @@ async def notify_seller(order_id: int, total: Decimal, address: str, phone: str,
     }
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": SELLER_ID, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
-                timeout=5
-            )
+            for seller_id in SELLER_IDS:
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": seller_id, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
+                    timeout=5
+                )
     except Exception:
         pass
 
