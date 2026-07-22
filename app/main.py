@@ -34,6 +34,23 @@ class ProductOut(BaseModel):
     is_active: bool
     category: Optional[CategoryOut] = None
 
+class ProductCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    price: float
+    stock: int = 0
+    image_url: Optional[str] = None
+    category_id: Optional[int] = None
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    stock: Optional[int] = None
+    image_url: Optional[str] = None
+    is_active: Optional[bool] = None
+    category_id: Optional[int] = None
+
 class CartItemAdd(BaseModel):
     product_id: int
     quantity: int = 1
@@ -100,6 +117,11 @@ async def get_current_user(
         db.add(user)
         await db.flush()
     return user
+
+
+def check_seller(x_seller_key: str):
+    if x_seller_key != BOT_TOKEN:
+        raise HTTPException(403, "Forbidden")
 
 
 async def notify_seller(order_id: int, total: Decimal, address: str, phone: str, items: list, buyer: str, buyer_id: int):
@@ -181,6 +203,50 @@ async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
     if not product:
         raise HTTPException(404, "Product not found")
     return product
+
+
+@app.post("/api/v1/products/", response_model=ProductOut, status_code=201)
+async def create_product(
+    data: ProductCreate,
+    x_seller_key: str = Header("", alias="X-Seller-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    check_seller(x_seller_key)
+    product = Product(**data.model_dump())
+    db.add(product)
+    await db.flush()
+    await db.refresh(product)
+    result = await db.execute(select(Product).where(Product.id == product.id).options(selectinload(Product.category)))
+    return result.scalar_one()
+
+
+@app.patch("/api/v1/products/{product_id}", response_model=ProductOut)
+async def update_product(
+    product_id: int,
+    data: ProductUpdate,
+    x_seller_key: str = Header("", alias="X-Seller-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    check_seller(x_seller_key)
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    for key, value in data.model_dump(exclude_none=True).items():
+        setattr(product, key, value)
+    await db.flush()
+    result = await db.execute(select(Product).where(Product.id == product_id).options(selectinload(Product.category)))
+    return result.scalar_one()
+
+
+@app.delete("/api/v1/products/{product_id}", status_code=204)
+async def delete_product(
+    product_id: int,
+    x_seller_key: str = Header("", alias="X-Seller-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    check_seller(x_seller_key)
+    await db.execute(delete(Product).where(Product.id == product_id))
 
 
 @app.get("/api/v1/cart/", response_model=CartOut)
